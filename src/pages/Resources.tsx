@@ -1,7 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { Resource } from '../types';
 import { Upload, BookOpen, Trash2, FileText, Download, Plus, X } from 'lucide-react';
+import { uploadPDF, fetchSubjectResources } from '../lib/supabase';
 
 interface SubjectCardProps {
   id: string;
@@ -20,6 +21,7 @@ const SubjectCard: React.FC<SubjectCardProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -30,18 +32,37 @@ const SubjectCard: React.FC<SubjectCardProps> = ({
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
     
     if (e.dataTransfer.files.length > 0) {
-      onUpload(e.dataTransfer.files);
+      await handleFileUpload(e.dataTransfer.files);
     }
   };
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      onUpload(e.target.files);
+      await handleFileUpload(e.target.files);
+    }
+  };
+
+  const handleFileUpload = async (files: FileList) => {
+    setIsUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (file.type === 'application/pdf') {
+          await uploadPDF(file, id);
+        }
+      }
+      // Refresh resources after upload
+      const updatedResources = await fetchSubjectResources(id);
+      onUpload(files);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      alert('Failed to upload file. Please try again.');
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -61,7 +82,6 @@ const SubjectCard: React.FC<SubjectCardProps> = ({
 
   return (
     <div className="bg-white rounded-lg shadow-md overflow-hidden">
-      {/* Subject header */}
       <div className="bg-blue-600 text-white p-4">
         <div className="flex items-center">
           <BookOpen size={24} className="mr-3" />
@@ -69,7 +89,6 @@ const SubjectCard: React.FC<SubjectCardProps> = ({
         </div>
       </div>
       
-      {/* Upload area */}
       <div 
         className={`p-6 border-2 border-dashed border-gray-300 rounded-lg m-4 transition-colors ${
           isDragging ? 'bg-blue-50 border-blue-400' : 'bg-gray-50'
@@ -79,25 +98,33 @@ const SubjectCard: React.FC<SubjectCardProps> = ({
         onDrop={handleDrop}
       >
         <div className="text-center">
-          <Upload size={32} className="mx-auto text-gray-400 mb-2" />
-          <p className="text-gray-600 mb-2">
-            Drag & drop PDF files here or <button onClick={triggerFileInput} className="text-blue-600 font-medium hover:text-blue-800">browse</button>
-          </p>
-          <p className="text-xs text-gray-500">
-            Upload NCERT materials for Class 9 {name}
-          </p>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileInputChange}
-            className="hidden"
-            accept=".pdf"
-            multiple
-          />
+          {isUploading ? (
+            <div className="flex flex-col items-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+              <p className="text-gray-600">Uploading...</p>
+            </div>
+          ) : (
+            <>
+              <Upload size={32} className="mx-auto text-gray-400 mb-2" />
+              <p className="text-gray-600 mb-2">
+                Drag & drop PDF files here or <button onClick={triggerFileInput} className="text-blue-600 font-medium hover:text-blue-800">browse</button>
+              </p>
+              <p className="text-xs text-gray-500">
+                Upload NCERT materials for Class 9 {name}
+              </p>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileInputChange}
+                className="hidden"
+                accept=".pdf"
+                multiple
+              />
+            </>
+          )}
         </div>
       </div>
       
-      {/* Resources list */}
       <div className="p-4">
         <h4 className="text-sm font-medium text-gray-500 mb-3 flex items-center">
           <FileText size={16} className="mr-2" />
@@ -222,18 +249,35 @@ const Resources: React.FC = () => {
   const { subjects, addSubject, addResource, deleteResource } = useAppContext();
   const [isAddSubjectModalOpen, setIsAddSubjectModalOpen] = useState(false);
 
-  const handleFileUpload = (subjectId: string, files: FileList) => {
-    // Process each file
+  // Load resources for each subject on component mount
+  useEffect(() => {
+    const loadResources = async () => {
+      for (const subject of subjects) {
+        try {
+          const resources = await fetchSubjectResources(subject.id);
+          resources.forEach(resource => {
+            addResource(subject.id, {
+              name: resource.name,
+              file: null,
+              url: resource.url
+            });
+          });
+        } catch (error) {
+          console.error(`Error loading resources for ${subject.name}:`, error);
+        }
+      }
+    };
+
+    loadResources();
+  }, []);
+
+  const handleFileUpload = async (subjectId: string, files: FileList) => {
     Array.from(files).forEach(file => {
       if (file.type === 'application/pdf') {
-        // In a real app, we would upload to server/storage
-        // For this demo, we'll create an object URL
-        const fileUrl = URL.createObjectURL(file);
-        
         addResource(subjectId, {
           name: file.name,
           file: file,
-          url: fileUrl
+          url: URL.createObjectURL(file)
         });
       }
     });
@@ -243,9 +287,16 @@ const Resources: React.FC = () => {
     addSubject(name);
   };
 
-  const handleDeleteResource = (subjectId: string, resourceId: string) => {
+  const handleDeleteResource = async (subjectId: string, resourceId: string) => {
     if (window.confirm('Are you sure you want to delete this resource?')) {
-      deleteResource(subjectId, resourceId);
+      try {
+        // Delete from Supabase storage and database
+        // This would be implemented in your supabase.ts file
+        deleteResource(subjectId, resourceId);
+      } catch (error) {
+        console.error('Error deleting resource:', error);
+        alert('Failed to delete resource. Please try again.');
+      }
     }
   };
 
